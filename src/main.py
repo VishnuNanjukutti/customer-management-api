@@ -1,4 +1,11 @@
 
+import os
+import hmac
+import hashlib
+import logging
+
+from fastapi import Request, BackgroundTasks, Header
+
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
@@ -152,3 +159,42 @@ def delete_customer(
     db.commit()
 
     return None
+
+
+
+def process_customer_event(event_body: bytes):
+    logging.info("Customer webhook event: %s", event_body.decode("utf-8", errors="replace"))
+
+
+@app.post("/webhooks/customer-events")
+async def receive_customer_event(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_signature: str | None = Header(default=None)
+):
+    body = await request.body()
+    secret = os.getenv("WEBHOOK_SECRET")
+
+    if not secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Webhook secret is not configured"
+        )
+
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        body,
+        hashlib.sha256
+    ).hexdigest()
+
+    if not x_signature or not hmac.compare_digest(
+        x_signature, expected_signature
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid signature"
+        )
+
+    background_tasks.add_task(process_customer_event, body)
+
+    return {"status": "accepted"}
